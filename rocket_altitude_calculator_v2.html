@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Model Rocket Altitude Calculator</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; background: #fafafa; color: #1a1a1a; line-height: 1.4; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .subtitle { color: #555; font-size: 14px; margin-bottom: 20px; }
+  h2 { font-size: 16px; margin-top: 30px; border-bottom: 2px solid #1a5fb4; padding-bottom: 4px; color: #1a5fb4; }
+  .field { margin-top: 12px; }
+  .field label { display: block; font-size: 13.5px; font-weight: 600; }
+  .field .hint { font-size: 12px; color: #666; margin-top: 1px; margin-bottom: 3px; }
+  .field input, .field select { width: 160px; padding: 5px 6px; font-size: 14px; border: 1px solid #bbb; border-radius: 4px; }
+  .row2 { display: flex; gap: 24px; flex-wrap: wrap; }
+  .row2 > div { flex: 1; min-width: 260px; }
+  .result { margin-top: 24px; padding: 18px; background: #eef6ff; border: 1px solid #cfe3fa; border-radius: 8px; }
+  .warning-banner { margin-top: 20px; padding: 14px 16px; background: #fdeaea; border: 2px solid #c0392b; border-radius: 8px; }
+  .warning-banner .warning-title { font-weight: 700; color: #a5281b; font-size: 15px; margin-bottom: 6px; }
+  .warning-banner ul { margin: 6px 0 0 18px; padding: 0; }
+  .warning-banner li { font-size: 13.5px; color: #7a2018; margin: 4px 0; }
+  .result div.line { font-size: 14px; margin: 3px 0; color: #333; }
+  .big { font-size: 30px; font-weight: 800; color: #1a5fb4; margin: 10px 0; }
+  .note { font-size: 12.5px; color: #666; background: #fff8e6; border: 1px solid #f0dca0; padding: 8px 10px; border-radius: 6px; margin-top: 10px; }
+  button { margin-top: 22px; padding: 10px 20px; font-size: 15px; cursor: pointer; background: #1a5fb4; color: white; border: none; border-radius: 6px; }
+  button:hover { background: #154a8f; }
+  .secondary-btn { background: #888; margin-left: 10px; }
+  .secondary-btn:hover { background: #666; }
+  details { margin-top: 6px; }
+  summary { cursor: pointer; font-size: 12.5px; color: #1a5fb4; }
+</style>
+</head>
+<body>
+
+<h1>Model Rocket Altitude Calculator</h1>
+<p class="subtitle">Full flight simulation in small time steps, including thrust, drag, gravity, launch angle, and weathercocking, from liftoff to apogee. All values below are editable. Every team can enter their own rocket and motor.</p>
+
+<h2>Rocket</h2>
+<div class="row2">
+<div>
+  <div class="field">
+    <label>Dry mass, rocket without motor (kg)</label>
+    <div class="hint">Weigh the empty rocket, no motor installed.</div>
+    <input id="mDry" value="0.513">
+  </div>
+  <div class="field">
+    <label>Body diameter at widest point (m)</label>
+    <div class="hint">Used for frontal area. 1 inch = 0.0254 m.</div>
+    <input id="diam" value="0.042">
+  </div>
+</div>
+<div>
+  <div class="field">
+    <label>Drag coefficient (Cd)</label>
+    <div class="hint">Fly once, then adjust this single number until the calculated altitude matches your real flight tracker.</div>
+    <input id="cd" value="1.10">
+  </div>
+  <div class="field">
+    <label>Rocket Build Style</label>
+    <div class="hint">Approximates how much Cd rises at high speed. This is a calibration heuristic, not a measured value. Adjust base Cd above to match real flights.</div>
+    <select id="buildStyle">
+      <option value="sleek">Sleek / Uniform Diameter (normal high-speed drag)</option>
+      <option value="stepped" selected>Stepped Body / Large Payload Section (elevated high-speed drag)</option>
+      <option value="rough">Rough Build / Exposed Tape (severe high-speed drag)</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Number of body tube diameters</label>
+    <div class="hint">If your rocket steps to a different diameter (e.g. wider upper tube), your Cd should already include extra drag from that transition. See note below.</div>
+    <input id="tubeNote" value="e.g. 2 sections" disabled style="background:#eee;">
+  </div>
+</div>
+</div>
+<div class="note">
+<b>About Cd:</b> A smooth single-diameter rocket with clean paint typically runs Cd 0.5 to 0.75. A rocket with a diameter step or shoulder (like a payload section wider than the booster) can run considerably higher. Flow separation at the step adds real drag that a simple frontal-area formula doesn't capture. The most reliable way to get an accurate Cd is either (a) a proper simulation of your exact geometry in OpenRocket or RockSim, or (b) <b>flight-calibration</b>: fly the rocket once with a tracked or altimeter-recorded altitude, then adjust Cd here until the calculator matches that real result. Once calibrated for a specific rocket, that Cd is valid for future predictions with that same rocket as long as the build doesn't change.
+</div>
+
+<h2>Motor</h2>
+<div class="field">
+  <label>Thrust model</label>
+  <select id="thrustMode" onchange="toggleThrustMode()">
+    <option value="flat">Flat average thrust (simple. Works for any motor using its spec sheet numbers)</option>
+    <option value="f39t">AeroTech F39T measured curve (built-in, more accurate for this specific motor)</option>
+  </select>
+</div>
+
+<div id="flatThrustFields">
+<div class="row2">
+<div>
+  <div class="field">
+    <label>Total motor weight, loaded (kg)</label>
+    <div class="hint">Whole motor as installed. Casing plus propellant.</div>
+    <input id="mMotor" value="0.060">
+  </div>
+  <div class="field">
+    <label>Propellant weight only (kg)</label>
+    <div class="hint">Check your motor's spec sheet. This is not the same as total motor weight.</div>
+    <input id="mProp" value="0.023">
+  </div>
+</div>
+<div>
+  <div class="field">
+    <label>Average thrust (N)</label>
+    <div class="hint">From the motor's certification data sheet.</div>
+    <input id="fAvg" value="37.3">
+  </div>
+  <div class="field">
+    <label>Burn time (s)</label>
+    <div class="hint">From the motor's certification data sheet.</div>
+    <input id="tBurn" value="1.3">
+  </div>
+</div>
+</div>
+</div>
+
+<div id="f39tFields" style="display:none;">
+<p class="hint">Using the real measured AeroTech F39T thrust curve (49.4 Ns total impulse, 1.33s burn). Mass fields below still apply.</p>
+<div class="row2">
+<div>
+  <div class="field"><label>Total motor weight, loaded (kg)</label><input id="mMotor2" value="0.060"></div>
+</div>
+<div>
+  <div class="field"><label>Propellant weight only (kg)</label><input id="mProp2" value="0.023"></div>
+</div>
+</div>
+</div>
+
+<h2>Launch Setup</h2>
+<div class="row2">
+<div>
+  <div class="field">
+    <label>Rail/rod angle from vertical (°)</label>
+    <div class="hint">Most competitions require some tilt off vertical for safety.</div>
+    <input id="railAngle" value="5">
+  </div>
+</div>
+<div>
+  <div class="field">
+    <label>Launch rail/rod length (m)</label>
+    <div class="hint">Longer rail = more speed before leaving the rail = less weathercocking for the same wind.</div>
+    <input id="railLen" value="1.0">
+  </div>
+</div>
+</div>
+
+<h2>Weather (humidity and wind matter a lot for accuracy)</h2>
+<div class="row2">
+<div>
+  <div class="field">
+    <label>Temperature (°C)</label>
+    <div class="hint">°F to °C: (°F − 32) × 5/9</div>
+    <input id="temp" value="18">
+  </div>
+  <div class="field">
+    <label>Relative humidity (%)</label>
+    <div class="hint">Humid air is slightly less dense than dry air. This can matter more than people expect.</div>
+    <input id="rh" value="80">
+  </div>
+  <div class="field">
+    <label>Station pressure (hPa)</label>
+    <div class="hint">Use local station pressure, not sea-level-adjusted pressure, if available.</div>
+    <input id="pres" value="1020">
+  </div>
+</div>
+<div>
+  <div class="field">
+    <label>Wind speed (mph)</label>
+    <div class="hint">This affects weathercocking. Even light wind can noticeably lower altitude.</div>
+    <input id="wind" value="2">
+  </div>
+</div>
+</div>
+
+<button onclick="calc()">Calculate Altitude</button>
+<button class="secondary-btn" onclick="resetDefaults()">Reset to F39T Example Defaults</button>
+
+<div id="warningBanner"></div>
+<div class="result" id="out"></div>
+
+<details>
+<summary>How this calculator works (for team leads and mentors)</summary>
+<div class="note" style="margin-top:8px;">
+<b>Simulation:</b> the flight is simulated in small time steps from liftoff through apogee. Each step updates velocity from (thrust minus drag minus gravity) divided by mass, in two dimensions (vertical and horizontal), and updates mass as propellant burns off. Thrust direction is set by an effective tilt angle equal to rail angle plus estimated weathercocking.<br><br>
+<b>Weathercocking estimate:</b> approximated once, using rail-exit speed, as arctan(wind speed divided by rail-exit speed), then held constant through the flight. This is a simplification. Real weathercocking also depends on the rocket's static stability margin (how many calibers of stability it has), which this calculator does not model directly. Rockets with a low stability margin will weathercock more than this estimates. Very stable rockets will weathercock less.<br><br>
+<b>Air density:</b> computed from temperature, humidity, and pressure using the moist-air density equation, not just the standard-atmosphere default most calculators use.<br><br>
+<b>Dynamic Cd and induced drag:</b> Cd is allowed to rise with speed toward a build-style-dependent ceiling. This is a calibration heuristic representing real-world effects like tape lift or seam separation at high dynamic pressure, not a measured aerodynamic curve. At these motors' speeds (well below Mach 0.3), true compressibility drag rise is not a real factor yet, so treat this as a tunable knob, not a physics law. Crosswind-induced angle of attack adds extra drag using safe geometry that stays well-behaved at zero velocity, with a capped multiplier to keep the simulation numerically stable.<br><br>
+<b>Known limitations:</b> assumes a flat, simplified thrust curve unless the F39T preset is selected. Does not model fin cant, surface roughness in detail, or recovery deployment. The weathercocking model is approximate and does not use stability margin. For competition-grade precision, cross-check against a real tracked or altimeter flight and calibrate Cd as described above.
+</div>
+</details>
+
+<script>
+function toggleThrustMode(){
+  const mode = document.getElementById('thrustMode').value;
+  document.getElementById('flatThrustFields').style.display = (mode==='flat') ? 'block':'none';
+  document.getElementById('f39tFields').style.display = (mode==='f39t') ? 'block':'none';
+}
+
+function checkForWarnings(inputs, results){
+  const warnings = [];
+  const {mDry, diam, Cd, mMotor, mProp, temp, rh, pres, windMph, railAngleDeg, railLen, thrustAvgEstimate} = inputs;
+
+  // Motor cannot lift the rocket at all
+  const mCase = mMotor - mProp;
+  const mDryTotal = mDry + mCase;
+  const weight = mDryTotal * 9.81;
+  if(thrustAvgEstimate <= weight){
+    warnings.push(`The motor's thrust (about ${thrustAvgEstimate.toFixed(1)} N) is not greater than the rocket's weight (about ${weight.toFixed(1)} N). This combination cannot lift off. Use a lighter rocket or a stronger motor.`);
+  } else if(thrustAvgEstimate <= weight*1.5){
+    warnings.push(`The motor is only barely stronger than the rocket's weight (thrust to weight ratio under 1.5). Many competition rules require a minimum thrust to weight ratio of 5 for safety. This rocket may leave the rail too slowly to fly straight.`);
+  }
+
+  // Propellant mass sanity check
+  if(mProp >= mMotor){
+    warnings.push(`Propellant weight (${mProp} kg) is not less than total motor weight (${mMotor} kg). Propellant weight should be smaller, since the casing and hardware also have weight.`);
+  }
+  if(mProp <= 0 || mMotor <= 0){
+    warnings.push(`Motor weight or propellant weight is zero or negative. Check these values.`);
+  }
+
+  // Mass and geometry sanity
+  if(mDry <= 0){
+    warnings.push(`Rocket dry mass is zero or negative. Check this value.`);
+  }
+  if(diam <= 0){
+    warnings.push(`Body diameter is zero or negative. Check this value.`);
+  }
+  if(diam > 0.5){
+    warnings.push(`Body diameter (${diam} m) is unusually large for a model rocket. Check that this is in meters, not another unit.`);
+  }
+
+  // Drag coefficient sanity
+  if(Cd <= 0){
+    warnings.push(`Drag coefficient is zero or negative. Real drag coefficients are positive numbers, usually between 0.3 and 2.`);
+  }
+  if(Cd > 2.5){
+    warnings.push(`Drag coefficient (${Cd}) is extremely high, even for a rough build. Double check this number before trusting the result.`);
+  }
+
+  // Weather sanity
+  if(temp < -30 || temp > 55){
+    warnings.push(`Temperature (${temp} degrees C) is far outside a normal launch day range. Check that this is in Celsius, not Fahrenheit.`);
+  }
+  if(rh < 0 || rh > 100){
+    warnings.push(`Relative humidity (${rh}%) must be between 0 and 100.`);
+  }
+  if(pres < 850 || pres > 1090){
+    warnings.push(`Station pressure (${pres} hPa) is outside the range seen in real weather at ground level. Typical sea-level pressure is near 1013 hPa.`);
+  }
+
+  // Wind and stability
+  if(windMph < 0){
+    warnings.push(`Wind speed cannot be negative.`);
+  }
+  if(windMph > 30){
+    warnings.push(`Wind speed (${windMph} mph) is above what most competitions allow for a safe launch. Many rules cap launches around 20 mph. This result is for reference only.`);
+  }
+
+  // Rail setup sanity
+  if(railAngleDeg < 0 || railAngleDeg > 30){
+    warnings.push(`Rail angle (${railAngleDeg} degrees from vertical) is outside a normal safety range. Most competitions require close to vertical, often under 10 to 15 degrees.`);
+  }
+  if(railLen <= 0){
+    warnings.push(`Rail or rod length must be greater than zero.`);
+  }
+  if(railLen < 0.3){
+    warnings.push(`Rail or rod length (${railLen} m) is very short. This can cause the rocket to leave the rail too slowly to fly straight.`);
+  }
+
+  // Results-based checks (after simulation runs)
+  if(results){
+    if(results.tiltDeg > 45){
+      warnings.push(`The simulated flight tilts more than 45 degrees from vertical (about ${results.tiltDeg.toFixed(1)} degrees). This combination of wind and thrust likely means the rocket will not fly a safe, mostly-vertical path in real life.`);
+    }
+    if(results.altitude_ft < 20){
+      warnings.push(`Predicted altitude (${results.altitude_ft.toFixed(0)} ft) is extremely low. This usually means the motor is too weak, the rocket is too heavy, drag is too high, or wind is too strong for this combination.`);
+    }
+    if(results.altitude_ft > 10000){
+      warnings.push(`Predicted altitude (${results.altitude_ft.toFixed(0)} ft) is unusually high for a typical model rocket motor. Double check motor and mass inputs, since this may reflect a data entry mistake rather than a real result.`);
+    }
+    if(results.hitStepCap){
+      warnings.push(`The simulation hit its safety step limit before reaching apogee. The result may not be reliable. This can happen with very low drag or very low gravity effect. Check your inputs.`);
+    }
+    if(results.maxSpeed_mph > 700){
+      warnings.push(`Simulated top speed (${results.maxSpeed_mph.toFixed(0)} mph) is approaching the speed of sound. This calculator does not model transonic or supersonic aerodynamics, so results at this speed are not reliable.`);
+    }
+  }
+
+  return warnings;
+}
+
+function renderWarnings(warnings){
+  const el = document.getElementById('warningBanner');
+  if(warnings.length === 0){
+    el.innerHTML = '';
+    return;
+  }
+  const items = warnings.map(w => `<li>${w}</li>`).join('');
+  el.innerHTML = `
+    <div class="warning-banner">
+      <div class="warning-title">This combination may be extreme, unsafe, or unreliable to model:</div>
+      <ul>${items}</ul>
+    </div>
+  `;
+}
+
+function resetDefaults(){
+  document.getElementById('mDry').value = 0.513;
+  document.getElementById('diam').value = 0.042;
+  document.getElementById('cd').value = 1.10;
+  document.getElementById('thrustMode').value = 'f39t';
+  toggleThrustMode();
+  document.getElementById('mMotor').value = 0.060;
+  document.getElementById('mProp').value = 0.023;
+  document.getElementById('fAvg').value = 37.3;
+  document.getElementById('tBurn').value = 1.3;
+  document.getElementById('mMotor2').value = 0.060;
+  document.getElementById('mProp2').value = 0.023;
+  document.getElementById('railAngle').value = 5;
+  document.getElementById('railLen').value = 1.0;
+  document.getElementById('temp').value = 18;
+  document.getElementById('rh').value = 80;
+  document.getElementById('pres').value = 1020;
+  document.getElementById('wind').value = 2;
+  calc();
+}
+
+function airDensity(tempC, rhPct, presHpa){
+  const T = tempC + 273.15;
+  const Rd = 287.05, Rv = 461.495;
+  const psat = 611.21 * Math.exp(17.502*tempC/(240.97+tempC)); // Pa, Tetens formula
+  const pv = (rhPct/100) * psat;
+  const pTotal = presHpa*100;
+  const pd = pTotal - pv;
+  return pd/(Rd*T) + pv/(Rv*T);
+}
+
+// Digitized AeroTech F39T measured thrust curve (time s, thrust N)
+const F39T_T = [0.00,0.01,0.02,0.04,0.06,0.08,0.10,0.15,0.18,0.24,0.33,0.36,0.38,0.41,0.44,0.48,
+                0.68,0.71,0.75,0.80,0.86,0.89,0.91,1.00,1.07,1.10,1.13,1.14,1.17,1.20,1.23,1.33];
+const F39T_F = [0,45,54,58.5,59,59.7,58,57,55,53.5,51,50,49.3,50.2,48.5,47,
+                41,39.7,39,36.5,34,33,32.7,29,25.3,22,17,13,8,4.5,2.5,0];
+
+function interp(t, xs, ys){
+  if(t<=xs[0]) return ys[0];
+  if(t>=xs[xs.length-1]) return ys[ys.length-1];
+  for(let i=0;i<xs.length-1;i++){
+    if(t>=xs[i] && t<=xs[i+1]){
+      const frac = (t-xs[i])/(xs[i+1]-xs[i]);
+      return ys[i] + frac*(ys[i+1]-ys[i]);
+    }
+  }
+  return 0;
+}
+
+// Velocity-dependent Cd: a calibration heuristic, not a measured aerodynamic curve.
+// Lets Cd ramp up toward a build-style-dependent ceiling as speed increases.
+function getDynamicCd(velocity, baseCd, style){
+  const peakMultiplier = { sleek: 1.15, stepped: 1.40, rough: 1.55 }[style] || 1.40;
+  const maxCd = baseCd * peakMultiplier;
+  if(velocity <= 200){
+    return baseCd + (maxCd - baseCd) * (velocity/200);
+  }
+  return maxCd;
+}
+
+function calc(){
+  const mDry = parseFloat(document.getElementById('mDry').value);
+  const diam = parseFloat(document.getElementById('diam').value);
+  const Cd = parseFloat(document.getElementById('cd').value);
+  const buildStyle = document.getElementById('buildStyle').value;
+  const railAngleDeg = parseFloat(document.getElementById('railAngle').value);
+  const railLen = parseFloat(document.getElementById('railLen').value);
+  const temp = parseFloat(document.getElementById('temp').value);
+  const rh = parseFloat(document.getElementById('rh').value);
+  const pres = parseFloat(document.getElementById('pres').value);
+  const windMph = parseFloat(document.getElementById('wind').value);
+
+  const mode = document.getElementById('thrustMode').value;
+  let mMotor, mProp, tBurn, thrustFn, totalImpulse;
+  if(mode === 'flat'){
+    mMotor = parseFloat(document.getElementById('mMotor').value);
+    mProp = parseFloat(document.getElementById('mProp').value);
+    tBurn = parseFloat(document.getElementById('tBurn').value);
+    const fAvg = parseFloat(document.getElementById('fAvg').value);
+    thrustFn = (t) => (t < tBurn ? fAvg : 0);
+    totalImpulse = fAvg * tBurn;
+  } else {
+    mMotor = parseFloat(document.getElementById('mMotor2').value);
+    mProp = parseFloat(document.getElementById('mProp2').value);
+    tBurn = F39T_T[F39T_T.length-1];
+    thrustFn = (t) => (t < tBurn ? interp(t, F39T_T, F39T_F) : 0);
+    // total impulse via trapezoidal integration of the real curve
+    totalImpulse = 0;
+    for(let i=0;i<F39T_T.length-1;i++){
+      totalImpulse += 0.5*(F39T_F[i]+F39T_F[i+1])*(F39T_T[i+1]-F39T_T[i]);
+    }
+  }
+
+  const g = 9.81;
+  const mCase = mMotor - mProp;
+  const mDryTotal = mDry + mCase; // rocket mass after burnout, casing still attached
+  const A = Math.PI * Math.pow(diam/2, 2);
+  const rho = airDensity(temp, rh, pres);
+  const windMs = windMph * 0.44704;
+
+  // rail-exit speed estimate (used once to size weathercocking angle, held constant through flight)
+  const earlyThrust = thrustFn(Math.min(0.05, tBurn*0.1));
+  const a0 = (earlyThrust - mDryTotal*g)/mDryTotal;
+
+  const preWarnings = checkForWarnings({mDry, diam, Cd, mMotor, mProp, temp, rh, pres, windMph, railAngleDeg, railLen, thrustAvgEstimate: earlyThrust}, null);
+
+  if(a0 <= 0){
+    // Motor cannot overcome the rocket's weight. Do not attempt to simulate, since the
+    // math would produce a meaningless or divide-by-zero result.
+    renderWarnings(preWarnings);
+    document.getElementById('out').innerHTML = `
+      <div class="line" style="color:#a5281b; font-weight:600;">No flight simulated. This motor cannot lift this rocket off the rail.</div>
+    `;
+    return;
+  }
+
+  const vRail = Math.sqrt(Math.max(2*a0*railLen, 0.01));
+  const weathercockDeg = Math.atan(windMs/vRail) * (180/Math.PI);
+  const effectiveTiltDeg = railAngleDeg + weathercockDeg;
+  const tiltRad = effectiveTiltDeg * Math.PI/180;
+
+  // --- 2D vector simulation: boost phase continues seamlessly into numeric coast phase ---
+  const n = 3000;
+  const dt = tBurn/n;
+  let vx = 0, vy = 0, x = 0, y = 0;
+  let runningImpulse = 0;
+  let maxY = 0;
+  let t = 0;
+  const maxSteps = 500000; // safety cap so a bad input can't freeze the page in an infinite loop
+  let steps = 0;
+  let vBurnout_x = 0, vBurnout_y = 0, burnoutRecorded = false;
+  let maxVmag = 0;
+
+  while(steps < maxSteps){
+    const thrustMag = (t < tBurn) ? thrustFn(t) : 0;
+
+    let propRemaining;
+    if(t < tBurn){
+      runningImpulse += thrustMag*dt;
+      propRemaining = mProp * Math.max(0, 1 - runningImpulse/totalImpulse);
+    } else {
+      propRemaining = 0;
+      if(!burnoutRecorded){ vBurnout_x = vx; vBurnout_y = vy; burnoutRecorded = true; }
+    }
+    const mass = mDryTotal + propRemaining;
+
+    const thrust_x = thrustMag * Math.sin(tiltRad);
+    const thrust_y = thrustMag * Math.cos(tiltRad);
+
+    const vmag = Math.sqrt(vx*vx + vy*vy);
+    if(vmag > maxVmag) maxVmag = vmag;
+    const currentCd = getDynamicCd(vmag, Cd, buildStyle);
+
+    // Angle of attack from crosswind, computed with atan2 so it's safe at vy=0 (apogee)
+    // instead of a raw division that blows up right when it matters most.
+    const relVx = vx - windMs;
+    const relVy = vy;
+    const velAngle = Math.atan2(relVx, relVy); // angle from vertical, same convention as tiltRad
+    const alpha = velAngle - tiltRad;
+    let inducedDragFactor = 1.0 + Math.min(Math.abs(alpha), Math.PI/2) * 2.5;
+    inducedDragFactor = Math.min(inducedDragFactor, 3.0); // safety ceiling so one bad frame can't spike the whole sim
+
+    const Fdrag = 0.5*rho*currentCd*A*vmag*vmag*inducedDragFactor;
+    let Fdx = 0, Fdy = 0;
+    if(vmag > 0){
+      Fdx = Fdrag*(vx/vmag);
+      Fdy = Fdrag*(vy/vmag);
+    }
+
+    const ax = (thrust_x - Fdx)/mass;
+    const ay = (thrust_y - Fdy - mass*g)/mass;
+
+    vx += ax*dt;
+    vy += ay*dt;
+    x += vx*dt;
+    y += vy*dt;
+
+    if(y > maxY) maxY = y;
+    t += dt;
+    steps++;
+
+    if(t > tBurn && vy <= 0) break; // apogee reached
+  }
+
+  if(!burnoutRecorded){ vBurnout_x = vx; vBurnout_y = vy; }
+  const vBurnoutMag = Math.sqrt(vBurnout_x*vBurnout_x + vBurnout_y*vBurnout_y);
+  const totalM = maxY;
+  const totalFt = totalM * 3.28084;
+  const driftFt = x * 3.28084;
+  const maxSpeed_mph = maxVmag * 2.23694;
+
+  const postWarnings = checkForWarnings(
+    {mDry, diam, Cd, mMotor, mProp, temp, rh, pres, windMph, railAngleDeg, railLen, thrustAvgEstimate: earlyThrust},
+    {tiltDeg: effectiveTiltDeg, altitude_ft: totalFt, hitStepCap: steps>=maxSteps, maxSpeed_mph: maxSpeed_mph}
+  );
+  renderWarnings(postWarnings);
+
+  document.getElementById('out').innerHTML = `
+    <div class="line">Air density (weather-adjusted): ${rho.toFixed(4)} kg/m³</div>
+    <div class="line">Rocket mass after burnout: ${mDryTotal.toFixed(3)} kg</div>
+    <div class="line">Rail-exit speed estimate: ${vRail.toFixed(1)} m/s</div>
+    <div class="line">Effective flight tilt: ${effectiveTiltDeg.toFixed(1)}° (rail ${railAngleDeg}° + weathercock ${weathercockDeg.toFixed(1)}°)</div>
+    <div class="line">Burnout velocity: ${vBurnoutMag.toFixed(1)} m/s</div>
+    <div class="line">Top speed reached: ${maxSpeed_mph.toFixed(0)} mph</div>
+    <div class="line">Horizontal drift at apogee: ${x.toFixed(1)} m (${driftFt.toFixed(0)} ft)</div>
+    <div class="line">Simulation steps used: ${steps.toLocaleString()}${steps>=maxSteps ? ' (hit safety cap, check inputs, result may be unreliable)':''}</div>
+    <div class="big">Total Altitude: ${totalFt.toFixed(0)} ft (${totalM.toFixed(1)} m)</div>
+  `;
+}
+
+toggleThrustMode();
+calc();
+</script>
+</body>
+</html>
