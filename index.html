@@ -225,13 +225,125 @@ function resetDefaults(){
   calc();
 }
 
+function saturationVaporPressurePa(tempC){
+  return 611.21 * Math.exp(17.502 * tempC / (240.97 + tempC));
+}
+
 function airDensity(tempC, rhPct, presHpa){
   const T = tempC + 273.15;
   const Rd = 287.05, Rv = 461.495;
-  const psat = 611.21 * Math.exp(17.502*tempC/(240.97+tempC));
-  const pv = (rhPct/100) * psat;
+  const psat = saturationVaporPressurePa(tempC);
+  const pv = Math.min((rhPct/100) * psat, presHpa * 100 * 0.99);
   const pd = (presHpa*100) - pv;
   return pd/(Rd*T) + pv/(Rv*T);
+}
+
+function wrapAngle(a){
+  while(a > Math.PI) a -= 2*Math.PI;
+  while(a < -Math.PI) a += 2*Math.PI;
+  return a;
+}
+
+function smoothstep01(x){
+  const u = Math.max(0, Math.min(1, x));
+  return u*u*(3 - 2*u);
+}
+
+function lerp(a,b,t){ return a + (b-a)*t; }
+
+function sutherlandViscosity(T){
+  const mu0 = 1.716e-5;
+  const T0 = 273.15;
+  const S = 110.4;
+  return mu0 * Math.pow(T/T0, 1.5) * (T0 + S)/(T + S);
+}
+
+function atmosphereAtAltitude(y, tempGround, rhPct, presHpa){
+  const yClamped = Math.max(0, y);
+  const T0 = tempGround + 273.15;
+  const p0 = presHpa * 100;
+  const lapse = 0.0065;
+  const g0 = 9.80665;
+  const Rd = 287.05;
+  const Rv = 461.495;
+  const gamma = 1.4;
+
+  const psat0 = saturationVaporPressurePa(tempGround);
+  const pv0 = Math.min((rhPct/100) * psat0, p0 * 0.99);
+  const mixingRatio = 0.622 * pv0 / Math.max(1, p0 - pv0);
+
+  let T, p;
+  const tropopauseAlt = 11000;
+  if(yClamped <= tropopauseAlt){
+    T = Math.max(216.65, T0 - lapse*yClamped);
+    p = p0 * Math.pow(T/T0, g0/(Rd*lapse));
+  } else {
+    const T11 = Math.max(216.65, T0 - lapse*tropopauseAlt);
+    const p11 = p0 * Math.pow(T11/T0, g0/(Rd*lapse));
+    T = 216.65;
+    p = p11 * Math.exp(-g0*(yClamped-tropopauseAlt)/(Rd*T));
+  }
+
+  const pvIdeal = p * mixingRatio / (0.622 + mixingRatio);
+  const pvSat = saturationVaporPressurePa(T - 273.15);
+  const pv = Math.min(pvIdeal, pvSat*0.999);
+  const pd = Math.max(0, p - pv);
+  const rho = pd/(Rd*T) + pv/(Rv*T);
+  const Rmix = rho > 0 ? p/rho/T : Rd;
+  const speedOfSound = Math.sqrt(Math.max(1, gamma * Rmix * T));
+
+  return { T, p, rho, speedOfSound, mu: sutherlandViscosity(T) };
+}
+
+function gravityAtAltitude(y){
+  const Re = 6371000;
+  const h = Math.max(0, y);
+  return 9.80665 * Math.pow(Re/(Re+h), 2);
+}
+
+function windProfile(y, windMsGround){
+  const z = Math.max(0, y);
+  const zRef = 2.0;
+  const z0 = 0.03;
+  if(windMsGround === 0) return 0;
+  if(z <= 0) return 0;
+  const denom = Math.log((zRef + z0)/z0);
+  const ratio = Math.log((z + z0)/z0) / denom;
+  return windMsGround * Math.max(0, ratio);
+}
+
+function machDragMultiplier(mach){
+  if(!Number.isFinite(mach) || mach <= 0.5) return 1;
+
+  // Smooth transonic drag rise centered on Mach 1, then a gradual
+  // supersonic relaxation so the curve does not exhibit a numerical spike.
+  const transonicPeak = 0.65 * Math.exp(-Math.pow((mach - 1.0)/0.11, 2));
+  const supersonicTail = mach > 1 ? 0.52 * (1 - Math.exp(-(mach - 1)/0.50)) : 0;
+  const blend = smoothstep01((mach - 0.5)/0.25);
+  return 1 + blend * (transonicPeak + supersonicTail);
+}
+
+function reynoldsDragMultiplier(reynolds){
+  if(!Number.isFinite(reynolds) || reynolds <= 0) return 0.97;
+  const logRe = Math.log10(Math.max(1e3, reynolds));
+  // Mild correction only: the user-entered Cd remains the governing value.
+  const correction = 0.03 * Math.tanh((logRe - 5.8)/0.65);
+  return Math.max(0.95, Math.min(1.05, 1 + correction));
+}
+
+function buildStyleDragMultiplier(mach, velocity, style){
+  const rise = { sleek: 0.15, stepped: 0.40, rough: 0.55 }[style] || 0.40;
+  const speed01 = smoothstep01((velocity - 70)/130);
+  const mach01 = smoothstep01((mach - 0.55)/0.75);
+  const blend = Math.max(speed01, mach01);
+  return 1 + rise * blend;
+}
+
+function getDynamicCd(velocity, baseCd, style, mach, reynolds){
+  const machFactor = machDragMultiplier(mach);
+  const reFactor = reynoldsDragMultiplier(reynolds);
+  const styleFactor = buildStyleDragMultiplier(mach, velocity, style);
+  return Math.max(0.01, baseCd * machFactor * reFactor * styleFactor);
 }
 
 const MOTOR_CURVES = {
@@ -250,11 +362,6 @@ function interp(t, xs, ys){
   return 0;
 }
 
-function getDynamicCd(velocity, baseCd, style){
-  const peakMultiplier = { sleek: 1.15, stepped: 1.40, rough: 1.55 }[style] || 1.40;
-  return velocity <= 200 ? baseCd + (baseCd * peakMultiplier - baseCd) * (velocity/200) : baseCd * peakMultiplier;
-}
-
 function calc(){
   const mDry = parseFloat(document.getElementById('mDry').value) / 1000;
   const diam = parseFloat(document.getElementById('diam').value);
@@ -268,11 +375,11 @@ function calc(){
   const windMphGround = parseFloat(document.getElementById('wind').value);
 
   const mode = document.getElementById('thrustMode').value;
-  let mMotor, mProp, tBurn, thrustFn, totalImpulse = 0;
+  let mMotor, mPropInitial, tBurn, thrustFn, totalImpulse = 0;
   
   if(mode === 'custom'){
     mMotor = parseFloat(document.getElementById('mMotor').value);
-    mProp = parseFloat(document.getElementById('mProp').value);
+    mPropInitial = parseFloat(document.getElementById('mProp').value);
     tBurn = parseFloat(document.getElementById('tBurn').value);
     const fAvg = parseFloat(document.getElementById('fAvg').value);
     thrustFn = (t) => (t < tBurn ? fAvg : 0);
@@ -280,91 +387,230 @@ function calc(){
   } else {
     const curve = MOTOR_CURVES[mode];
     mMotor = parseFloat(document.getElementById('mMotor2').value);
-    mProp = parseFloat(document.getElementById('mProp2').value);
+    mPropInitial = parseFloat(document.getElementById('mProp2').value);
     tBurn = curve.t[curve.t.length-1];
     thrustFn = (t) => (t < tBurn ? interp(t, curve.t, curve.f) : 0);
     for(let i=0;i<curve.t.length-1;i++) totalImpulse += 0.5*(curve.f[i]+curve.f[i+1])*(curve.t[i+1]-curve.t[i]);
   }
 
-  const mCase = mMotor - mProp;
-  const mDryTotal = mDry + mCase;
+  const mCase = Math.max(0, mMotor - mPropInitial);
+  const initialMass = mDry + mMotor;
   const A = Math.PI * Math.pow(diam/2, 2);
   const windMsGround = windMphGround * 0.44704;
+  const railAngle = railAngleDeg * Math.PI/180;
+  const railVec = { x: Math.sin(railAngle), y: Math.cos(railAngle) };
+  const exhaustVelocity = mPropInitial > 0 ? totalImpulse / mPropInitial : Infinity;
 
   const earlyThrust = thrustFn(Math.min(0.05, tBurn*0.1));
-  if(earlyThrust <= mDryTotal * 9.81){
+  if(earlyThrust <= initialMass * 9.81){
+    renderWarnings([]);
     document.getElementById('out').innerHTML = `<div class="line" style="color:red;">Motor cannot lift rocket off rail.</div>`;
     return;
   }
 
-  // Integration variables
-  const n = 3000;
-  const dt = tBurn/n;
-  let vx = 0, vy = 0, x = 0, y = 0, t = 0;
-  let runningImpulse = 0, maxY = 0, maxVmag = 0, maxTiltRad = 0;
-  let tiltRad = railAngleDeg * Math.PI/180;
-  
-  while(t < 50){ // Hard cutoff limit
-    const thrustMag = (t < tBurn) ? thrustFn(t) : 0;
-    
-    let propRemaining = 0;
-    if(t < tBurn){
-      runningImpulse += thrustMag*dt;
-      propRemaining = mProp * Math.max(0, 1 - runningImpulse/totalImpulse);
-    }
-    const mass = mDryTotal + propRemaining;
+  // Internal stability approximation. No geometry input exists in the UI, so
+  // these values are deliberately treated as a generic slender model rather
+  // than pretending to know the user's exact fin/airframe geometry.
+  const referenceLength = Math.max(0.25, 10 * diam);
+  const dryCgFromNose = 0.42 * referenceLength;
+  const caseCgFromNose = 0.90 * referenceLength;
+  const propCgFromNose = 0.90 * referenceLength;
+  const cpFromNose = 0.70 * referenceLength;
+  const refArea = A;
 
-    // Environmental Updates (Professional Additions)
-    const g_alt = 9.80665 * Math.pow(6371000 / (6371000 + y), 2);
-    const tempAtAlt = tempGround - (0.0065 * y);
-    const rhoAtAlt = airDensity(tempAtAlt, rh, pres);
-    
-    // Wind profile power law (assuming ground wind measured at 2m height)
-    const windMsAtAlt = windMsGround * Math.pow(Math.max(y, 2.0) / 2.0, 0.143);
-    
-    // Dynamic Weathercocking
-    const distTraveled = Math.sqrt(x*x + y*y);
-    const relVx = vx - windMsAtAlt;
-    const velAngle = Math.atan2(relVx, vy); // Safe angle calculation
-    
-    if(distTraveled > railLen) {
-        tiltRad = tiltRad + (velAngle - tiltRad) * 0.0175; // Fin restoring force interpolation
-    }
-    if(Math.abs(tiltRad) > maxTiltRad) maxTiltRad = Math.abs(tiltRad);
-
-    const thrust_x = thrustMag * Math.sin(tiltRad);
-    const thrust_y = thrustMag * Math.cos(tiltRad);
-
-    const vmag = Math.sqrt(vx*vx + vy*vy);
-    if(vmag > maxVmag) maxVmag = vmag;
-    
-    const currentCd = getDynamicCd(vmag, Cd, buildStyle);
-    const alpha = velAngle - tiltRad;
-    let inducedDragFactor = Math.min(1.0 + Math.abs(alpha) * 2.5, 3.0); 
-
-    const Fdrag = 0.5 * rhoAtAlt * currentCd * A * vmag * vmag * inducedDragFactor;
-    let Fdx = 0, Fdy = 0;
-    if(vmag > 0){
-      Fdx = Fdrag * (vx/vmag);
-      Fdy = Fdrag * (vy/vmag);
-    }
-
-    const ax = (thrust_x - Fdx) / mass;
-    const ay = (thrust_y - Fdy - mass * g_alt) / mass;
-
-    vx += ax*dt;
-    vy += ay*dt;
-    x += vx*dt;
-    y += vy*dt;
-
-    if(y > maxY) maxY = y;
-    t += dt;
-
-    if(t > tBurn && vy <= 0) break; // Apogee
+  function stabilityGeometry(propMass){
+    const total = mDry + mCase + Math.max(0, propMass);
+    const cg = total > 0
+      ? (mDry*dryCgFromNose + mCase*caseCgFromNose + Math.max(0, propMass)*propCgFromNose) / total
+      : dryCgFromNose;
+    const staticMarginM = cpFromNose - cg;
+    const staticMarginCal = staticMarginM / Math.max(diam, 1e-6);
+    return { total, cg, cp: cpFromNose, staticMarginM, staticMarginCal };
   }
 
+  function momentOfInertia(propMass, mass, cg){
+    const radius = diam/2;
+    const Ibody = mDry * referenceLength*referenceLength / 12 + mDry*radius*radius/4;
+    const Icase = mCase * Math.pow(caseCgFromNose - cg, 2) + mCase*radius*radius/2;
+    const Iprop = Math.max(0, propMass) * Math.pow(propCgFromNose - cg, 2) + Math.max(0, propMass)*radius*radius/2;
+    return Math.max(1e-7, Ibody + Icase + Iprop + mass*radius*radius/8);
+  }
+
+  // State vector: [x, y, vx, vy, pitchAngle, pitchRate, propellantMass]
+  // pitchAngle is measured from vertical; positive rotates toward +x.
+  let state = [0, 0, 0, 0, railAngle, 0, mPropInitial];
+  const burnDt = tBurn > 0 ? tBurn/3000 : 0.001;
+  const postBurnDt = 0.002;
+  const maxTime = 50;
+  const reLaunch = { crossed: false };
+  let maxY = 0, maxVmag = 0, maxTiltRad = Math.abs(railAngle);
+
+  function derivatives(s, time){
+    const x = s[0], y = s[1], vx = s[2], vy = s[3];
+    const propMass = Math.max(0, s[6]);
+    const thrustMag = (time < tBurn && propMass > 0) ? Math.max(0, thrustFn(time)) : 0;
+
+    const atm = atmosphereAtAltitude(y, tempGround, rh, pres);
+    const gAlt = gravityAtAltitude(y);
+    const windX = windProfile(y, windMsGround);
+    const ux = vx - windX;
+    const uy = vy;
+    const vRel = Math.sqrt(ux*ux + uy*uy);
+    const vBody = Math.sqrt(vx*vx + vy*vy);
+    const beta = vRel > 1e-8 ? Math.atan2(ux, uy) : railAngle;
+    let theta = s[4];
+    let omega = s[5];
+
+    const stab = stabilityGeometry(propMass);
+    const mass = stab.total;
+    const Iyy = momentOfInertia(propMass, mass, stab.cg);
+
+    let ax = 0, ay = -gAlt;
+    let alpha = 0;
+    let aeroFx = 0, aeroFy = 0;
+    let momentTheta = 0;
+
+    const rocketAxis = { x: Math.sin(theta), y: Math.cos(theta) };
+
+    const railDistance = x*railVec.x + y*railVec.y;
+    const onRail = !reLaunch.crossed && railDistance < railLen;
+    if(onRail){
+      // Physical rail constraint: orientation and motion are locked to the rail
+      // until the nose clears the rail end.
+      theta = railAngle;
+      omega = 0;
+    }
+
+    if(vRel > 0.05){
+      alpha = wrapAngle(theta - beta);
+      alpha = Math.max(-0.35, Math.min(0.35, alpha));
+    }
+
+    const q = 0.5 * atm.rho * vRel * vRel;
+    const mach = vRel / Math.max(1, atm.speedOfSound);
+    const reynolds = atm.rho * vRel * diam / Math.max(1e-8, atm.mu);
+    const currentCd = getDynamicCd(vRel, Cd, buildStyle, mach, reynolds);
+
+    if(vRel > 0.05){
+      const airNormal = { x: uy/vRel, y: -ux/vRel };
+      const cnAlpha = 2*Math.PI * (0.80 + 0.25*Math.max(-0.5, Math.min(4, stab.staticMarginCal)));
+      const normalForce = q * refArea * cnAlpha * alpha;
+
+      const alphaDragFactor = 1 + 2.0 * Math.sin(alpha) * Math.sin(alpha);
+      const dragForce = q * refArea * currentCd * alphaDragFactor;
+      const dragUx = ux / vRel;
+      const dragUy = uy / vRel;
+
+      aeroFx = -dragForce*dragUx + normalForce*airNormal.x;
+      aeroFy = -dragForce*dragUy + normalForce*airNormal.y;
+
+      if(!onRail){
+        // CP aft of CG => a positive angle-of-attack produces a restoring
+        // pitch moment. The sign below is with theta positive toward +x.
+        const restoringMoment = -normalForce * stab.staticMarginM;
+
+        // Pitch-rate damping. This is a dimensionally consistent dynamic-pressure
+        // approximation of the conventional Cmq term, regularized near zero speed.
+        const Cmq = -20;
+        const qhat = omega * referenceLength / Math.max(2*vRel, 8);
+        const dampingMoment = q * refArea * referenceLength * Cmq * qhat;
+        momentTheta = restoringMoment + dampingMoment;
+
+        const thetaAccel = momentTheta / Iyy;
+        ax = (thrustMag*rocketAxis.x + aeroFx) / mass;
+        ay = (thrustMag*rocketAxis.y + aeroFy) / mass - gAlt;
+        return [vx, vy, ax, ay, omega, thetaAccel, -((exhaustVelocity > 0 && Number.isFinite(exhaustVelocity)) ? thrustMag/exhaustVelocity : 0)];
+      }
+    }
+
+    // Before rail exit, the guide supplies the transverse constraint. All
+    // available force is projected onto the rail so lateral aerodynamic load
+    // cannot move the rocket off the physical guide.
+    const freeFx = thrustMag*railVec.x + aeroFx;
+    const freeFy = thrustMag*railVec.y + aeroFy;
+    const alongRailAccel = (freeFx*railVec.x + freeFy*railVec.y) / mass - gAlt*railVec.y;
+
+    ax = alongRailAccel * railVec.x;
+    ay = alongRailAccel * railVec.y;
+
+    return [vx, vy, ax, ay, 0, 0, -((exhaustVelocity > 0 && Number.isFinite(exhaustVelocity)) ? thrustMag/exhaustVelocity : 0)];
+  }
+
+  function addScaled(s, k, h){
+    const out = new Array(s.length);
+    for(let i=0;i<s.length;i++) out[i] = s[i] + k[i]*h;
+    return out;
+  }
+
+  function rk4Step(s, time, h){
+    const k1 = derivatives(s, time);
+    const k2 = derivatives(addScaled(s, k1, h/2), time + h/2);
+    const k3 = derivatives(addScaled(s, k2, h/2), time + h/2);
+    const k4 = derivatives(addScaled(s, k3, h), time + h);
+    const out = new Array(s.length);
+    for(let i=0;i<s.length;i++){
+      out[i] = s[i] + h*(k1[i] + 2*k2[i] + 2*k3[i] + k4[i])/6;
+    }
+    out[6] = Math.max(0, Math.min(mPropInitial, out[6]));
+    if(!reLaunch.crossed){
+      // Keep the state exactly on the rail while constrained.
+      const railDistance = out[0]*railVec.x + out[1]*railVec.y;
+      if(railDistance < railLen){
+        out[0] = railDistance*railVec.x;
+        out[1] = railDistance*railVec.y;
+        const railSpeed = out[2]*railVec.x + out[3]*railVec.y;
+        out[2] = railSpeed*railVec.x;
+        out[3] = railSpeed*railVec.y;
+        out[4] = railAngle;
+        out[5] = 0;
+      }
+    }
+    return out;
+  }
+
+  let t = 0;
+  while(t < maxTime){
+    // Sample diagnostics before each integration step.
+    const vMag = Math.sqrt(state[2]*state[2] + state[3]*state[3]);
+
+    if(state[1] > maxY) maxY = state[1];
+    if(vMag > maxVmag) maxVmag = vMag;
+    if(Math.abs(state[4]) > maxTiltRad) maxTiltRad = Math.abs(state[4]);
+
+    const beforeRail = !reLaunch.crossed;
+    const remainingBurn = Math.max(0, tBurn - t);
+    const h = t < tBurn ? Math.min(burnDt, remainingBurn || burnDt) : postBurnDt;
+    state = rk4Step(state, t, h);
+
+    // Detect rail exit after the completed step so rotational dynamics begin
+    // immediately after the rail constraint has been physically crossed.
+    if(beforeRail){
+      const railDistance = state[0]*railVec.x + state[1]*railVec.y;
+      if(railDistance >= railLen){
+        reLaunch.crossed = true;
+        state[4] = railAngle;
+        state[5] = 0;
+      }
+    }
+
+    const newY = state[1];
+    if(newY > maxY) maxY = newY;
+    const postBurn = t + h > tBurn;
+    if(postBurn && state[3] <= 0 && state[1] >= maxY - 1e-4) break;
+
+    t += h;
+
+    // Prevent a pathological zero-thrust / zero-progress state from running
+    // forever when custom inputs are malformed.
+    if(h <= 0 || !Number.isFinite(h)) break;
+    if(!Number.isFinite(state[0]) || !Number.isFinite(state[1]) || !Number.isFinite(state[2]) || !Number.isFinite(state[3]) || !Number.isFinite(state[4])) break;
+
+  }
+
+  // If a numerical edge case made the trajectory terminate before apogee,
+  // the maximum sampled altitude remains the conservative reported result.
   const postWarnings = checkForWarnings(
-    {mDry, diam, Cd, mMotor, mProp, thrustAvgEstimate: earlyThrust},
+    {mDry, diam, Cd, mMotor, mProp: mPropInitial, thrustAvgEstimate: earlyThrust},
     {maxTiltDeg: maxTiltRad * (180/Math.PI)}
   );
   renderWarnings(postWarnings);
@@ -372,7 +618,7 @@ function calc(){
   document.getElementById('out').innerHTML = `
     <div class="line">Max dynamic flight tilt: ${(maxTiltRad * 180/Math.PI).toFixed(1)}°</div>
     <div class="line">Top speed reached: ${(maxVmag * 2.23694).toFixed(0)} mph</div>
-    <div class="line">Horizontal drift at apogee: ${x.toFixed(1)} m (${(x * 3.28084).toFixed(0)} ft)</div>
+    <div class="line">Horizontal drift at apogee: ${state[0].toFixed(1)} m (${(state[0] * 3.28084).toFixed(0)} ft)</div>
     <div class="big">Total Altitude: ${(maxY * 3.28084).toFixed(0)} ft (${maxY.toFixed(1)} m)</div>
   `;
 }
