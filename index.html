@@ -328,7 +328,7 @@ function calc(){
     const velAngle = Math.atan2(relVx, vy); // Safe angle calculation
     
     if(distTraveled > railLen) {
-        tiltRad = tiltRad + (velAngle - tiltRad) * 0.05; // Fin restoring force interpolation
+        tiltRad = tiltRad + (velAngle - tiltRad) * 0.0175; // Fin restoring force interpolation
     }
     if(Math.abs(tiltRad) > maxTiltRad) maxTiltRad = Math.abs(tiltRad);
 
